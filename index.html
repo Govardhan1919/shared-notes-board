@@ -1,0 +1,148 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<title>Shared Notes</title>
+<style>
+:root{--bg:#f6f5f1;--card:#fff;--text:#1d1d1b;--muted:#6b6b66;--line:#dedbd1;--accent:#2f6f5e;--accent-text:#fff;--danger:#b3261e;color-scheme:light}
+@media (prefers-color-scheme:dark){:root{--bg:#161615;--card:#201f1d;--text:#f0eee8;--muted:#a09d94;--line:#383630;--accent:#6fc4a8;--accent-text:#10201a;--danger:#f2b8b5;color-scheme:dark}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--text);font:16px/1.5 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
+main{max-width:860px;margin:0 auto;padding:24px 16px 40px}
+h1{font-size:1.5rem;margin:0 0 4px}
+.sub{color:var(--muted);margin:0 0 20px;font-size:.95rem}
+#banner{display:none;margin:0 0 16px;padding:10px 12px;border:1px solid var(--line);border-radius:10px;background:var(--card);color:var(--muted);font-size:.9rem}
+.grid{display:grid;grid-template-columns:1fr;gap:14px}
+@media (min-width:700px){.grid{grid-template-columns:1fr 1fr}}
+.card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:14px;display:flex;flex-direction:column;gap:8px}
+.card label{font-weight:600;font-size:.95rem}
+textarea{width:100%;min-height:150px;resize:vertical;padding:10px;border:1px solid var(--line);border-radius:10px;background:transparent;color:var(--text);font:inherit}
+textarea:focus{outline:2px solid var(--accent);outline-offset:1px}
+.row{display:flex;align-items:center;gap:8px}
+.status{flex:1;color:var(--muted);font-size:.8rem;min-width:0}
+button{font:inherit;font-size:.9rem;padding:8px 14px;border-radius:9px;border:1px solid var(--line);background:transparent;color:var(--text);cursor:pointer}
+button.save{background:var(--accent);color:var(--accent-text);border-color:var(--accent);font-weight:600}
+button.del.confirm{border-color:var(--danger);color:var(--danger)}
+button:disabled{opacity:.5;cursor:not-allowed}
+</style>
+</head>
+<body>
+<main>
+  <h1>Shared Notes</h1>
+  <p class="sub">Four boxes, no sign-in. Whatever you save stays here for everyone until someone deletes it.</p>
+  <div id="banner" role="status"></div>
+  <div class="grid" id="grid"></div>
+</main>
+<script>
+(function () {
+  var IDS = ["b1", "b2", "b3", "b4"];
+  var cards = {}, dirty = {}, busy = {}, confirmTimers = {};
+  var banner = document.getElementById("banner");
+
+  function showBanner(msg) { banner.textContent = msg; banner.style.display = msg ? "block" : "none"; }
+
+  function api(method, url, body) {
+    return fetch(url, {
+      method: method,
+      headers: { "Content-Type": "application/json" },
+      body: body ? JSON.stringify(body) : undefined,
+      cache: "no-store"
+    }).then(function (r) {
+      if (!r.ok) throw new Error("HTTP " + r.status);
+      return r.json();
+    });
+  }
+
+  function stamp(ms) {
+    try { return new Date(ms).toLocaleString([], { dateStyle: "medium", timeStyle: "short" }); }
+    catch (e) { return ""; }
+  }
+
+  IDS.forEach(function (id, i) {
+    var card = document.createElement("div");
+    card.className = "card";
+    card.innerHTML =
+      '<label for="t-' + id + '">Box ' + (i + 1) + '</label>' +
+      '<textarea id="t-' + id + '" placeholder="Type something here\u2026" maxlength="20000"></textarea>' +
+      '<div class="row"><span class="status">Loading\u2026</span>' +
+      '<button class="del" type="button">Delete</button>' +
+      '<button class="save" type="button">Save</button></div>';
+    document.getElementById("grid").appendChild(card);
+    var c = {
+      ta: card.querySelector("textarea"),
+      status: card.querySelector(".status"),
+      save: card.querySelector(".save"),
+      del: card.querySelector(".del")
+    };
+    cards[id] = c;
+    c.ta.addEventListener("input", function () { dirty[id] = true; c.status.textContent = "Unsaved changes"; });
+    c.save.addEventListener("click", function () { save(id); });
+    c.del.addEventListener("click", function () { remove(id); });
+  });
+
+  function save(id) {
+    var c = cards[id];
+    busy[id] = true;
+    c.status.textContent = "Saving\u2026";
+    api("POST", "/api/notes", { id: id, text: c.ta.value }).then(function (r) {
+      dirty[id] = false;
+      c.status.textContent = "Saved \u00b7 " + stamp(r.updatedAt);
+    }).catch(function () {
+      c.status.textContent = "Couldn\u2019t save. Please try again.";
+    }).then(function () { busy[id] = false; });
+  }
+
+  function remove(id) {
+    var c = cards[id];
+    if (!c.del.classList.contains("confirm")) {
+      c.del.classList.add("confirm");
+      c.del.textContent = "Tap again to delete";
+      clearTimeout(confirmTimers[id]);
+      confirmTimers[id] = setTimeout(function () {
+        c.del.classList.remove("confirm"); c.del.textContent = "Delete";
+      }, 3000);
+      return;
+    }
+    clearTimeout(confirmTimers[id]);
+    c.del.classList.remove("confirm"); c.del.textContent = "Delete";
+    busy[id] = true;
+    c.status.textContent = "Deleting\u2026";
+    api("DELETE", "/api/notes?id=" + id).then(function () {
+      dirty[id] = false; c.ta.value = ""; c.status.textContent = "Empty";
+    }).catch(function () {
+      c.status.textContent = "Couldn\u2019t delete. Please try again.";
+    }).then(function () { busy[id] = false; });
+  }
+
+  function render(map) {
+    IDS.forEach(function (id) {
+      if (dirty[id] || busy[id]) return;
+      var c = cards[id], d = map[id];
+      if (d && typeof d.text === "string") {
+        if (c.ta.value !== d.text) c.ta.value = d.text;
+        c.status.textContent = d.updatedAt ? "Saved \u00b7 " + stamp(d.updatedAt) : "Saved";
+      } else {
+        c.ta.value = "";
+        c.status.textContent = "Empty";
+      }
+    });
+  }
+
+  function load() {
+    api("GET", "/api/notes").then(function (map) {
+      showBanner("");
+      render(map);
+    }).catch(function () {
+      showBanner("Couldn\u2019t reach the notes right now. Retrying\u2026");
+    });
+  }
+
+  load();
+  setInterval(function () { if (!document.hidden) load(); }, 5000);
+  document.addEventListener("visibilitychange", function () { if (!document.hidden) load(); });
+})();
+</script>
+</body>
+</html>
